@@ -15,7 +15,7 @@ Easy, fast, and cheap LLM serving for everyone
 </p>
 
 ---
-I have changed the original repo to enable storing the attention scores. To use the feature, just include the file name (with full path) that you want to store the scores to in `llm.generate(log_file_name='file_name') `.
+I have changed the original repo to enable storing the attention scores. To use the feature, just include the file name (with full path) that you want to store the scores to in `llm.generate(log_file_name='file_name') `. Check t_basic.py for use case.
 ---
 ---
 Join us at the [PyTorch Conference, October 22-23](https://events.linuxfoundation.org/pytorch-conference/) and [Ray Summit, November 3-5](https://www.anyscale.com/ray-summit/2025) in San Francisco for our latest updates on vLLM and to meet the vLLM team! Register now for the largest vLLM community events of the year!
