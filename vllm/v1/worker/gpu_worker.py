@@ -256,10 +256,23 @@ class Worker(WorkerBase):
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
+    # def load_model(self) -> None:
+    #     eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+    #     with self._maybe_get_memory_pool_context(tag="weights"):
+    #         self.model_runner.load_model(eep_scale_up=eep_scale_up)
+            
     def load_model(self) -> None:
         eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
         with self._maybe_get_memory_pool_context(tag="weights"):
             self.model_runner.load_model(eep_scale_up=eep_scale_up)
+
+        self.token_importance = self.model_runner.model.token_importance
+        print("after load self.model_runner:", self.model_runner)  # DEBUG
+        print("after load self.model_runner.model:", self.model_runner.model)  # DEBUG
+        print("after load self.model_runner.model.token_importance:", self.model_runner.model.token_importance)  # DEBUG
+
+    def reset_importance(self) -> None:
+        self.model_runner.model.reset_importance()
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         self.model_runner.update_config(overrides)

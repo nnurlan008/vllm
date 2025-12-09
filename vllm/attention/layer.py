@@ -288,6 +288,8 @@ class Attention(nn.Module, AttentionLayerBase):
         backend_name = self.attn_backend.get_name()
         self.backend = AttentionBackendEnum.__members__.get(backend_name)
         self.dtype = dtype
+        
+        self.block_importance = self.impl.attn_score_per_layer
 
         # For cuda-alike (CUDA and ROCM) and cpu platforms, we control how
         # torch.compile works by registering the attention as one giant
@@ -332,6 +334,9 @@ class Attention(nn.Module, AttentionLayerBase):
         ):
             self.query_quant = QuantFP8(static=True, group_shape=GroupShape.PER_TENSOR)
 
+    def reset_importance(self):
+        self.impl.reset_importance()
+        
     def forward(
         self,
         query: torch.Tensor,

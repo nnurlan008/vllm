@@ -83,6 +83,15 @@ from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.llm_engine import LLMEngine
 from vllm.v1.sample.logits_processor import LogitsProcessor
 
+# for plotting attention weights
+import numpy as np
+import matplotlib.pyplot as plt
+import math
+import pickle
+import torch
+import os
+from torch.nn.utils.rnn import pad_sequence
+
 if TYPE_CHECKING:
     from vllm.v1.metrics.reader import Metric
 
@@ -387,6 +396,7 @@ class LLM:
         use_tqdm: bool | Callable[..., tqdm] = True,
         lora_request: list[LoRARequest] | LoRARequest | None = None,
         priority: list[int] | None = None,
+        log_file_name: str | None = None,
     ) -> list[RequestOutput]:
         """Generates the completions for the input prompts.
 
@@ -445,7 +455,50 @@ class LLM:
         )
 
         outputs = self._run_engine(use_tqdm=use_tqdm)
+        
+        # self.save_attn_weights(file_name=log_file_name)
+        
         return self.engine_class.validate_outputs(outputs, RequestOutput)
+
+    def reset_importance(self):
+        self.llm_engine.reset_importance() # reset the token importance in model implementation usind in forward pass
+
+    def save_attn_weights(self, file_name: str | None = None):
+        
+        # print("self.llm_engine.get_importance():", self.llm_engine.get_importance())
+        # pass
+        
+        if file_name != None:
+            token_lists = self.llm_engine.get_importance()
+            token_lists = token_lists[0]
+            # print("generate - token_importance:", token_lists)
+            logger.warning(
+                    "Saving the attention weights to " + file_name
+                )
+            padded_token_importance = []
+            for layer_idx, layer_weights in enumerate(token_lists):
+                # Convert each list to a tensor individually
+                layer_tensors = []
+                # print("type(layer_weights):", type(layer_weights))
+                max_len = max(len(per_query) for per_query in layer_weights)
+                for weights in layer_weights:
+                    # print("type(weights):", type(weights))
+
+                    padded_weights = weights + [0] * (max_len - len(weights))
+                    layer_tensors.append(torch.tensor(padded_weights, dtype=torch.float32))
+                
+                # Now pad all tensors in this layer to the same length
+                
+                # padded = torch.stack(layer_tensors)
+                padded_token_importance.append(layer_tensors)
+            
+            # if os.path.exists(file_name):
+            #     existing_data = torch.load(file_name)
+            #     # Append new data
+            #     padded_token_importance = existing_data + padded_token_importance
+            
+            # os.path.join(folder, file_name)
+            torch.save(padded_token_importance, file_name)
 
     def _get_modality_specific_lora_reqs(
         self,

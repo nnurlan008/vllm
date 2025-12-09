@@ -221,7 +221,12 @@ class LlamaAttention(nn.Module):
             attn_type=attn_type,
             prefix=f"{prefix}.attn",
         )
+        
+        self.token_importance = self.attn.block_importance
 
+    def reset_importance(self):
+        self.attn.reset_importance()
+        
     def _get_llama_4_attn_scale(self, positions: torch.Tensor) -> torch.Tensor:
         # Llama4 scaling
         scaling = 1 + self.llama_4_scaling_beta * torch.log(
@@ -562,6 +567,12 @@ class LlamaForCausalLM(
             prefix=maybe_prefix(prefix, "model"),
             layer_type=layer_type,
         )
+        
+        self.token_importance = [] 
+        # self.model.layers[0].self_attn.token_importance
+        for layer_idx in range(config.num_hidden_layers):
+            # self.model.layers[layer_idx].self_attn.token_importance.clear()
+            self.token_importance.append(self.model.layers[layer_idx].self_attn.token_importance)
 
         if get_pp_group().is_last_rank:
             self.lm_head = ParallelLMHead(
@@ -586,6 +597,10 @@ class LlamaForCausalLM(
 
     def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
         self.model.aux_hidden_state_layers = layers
+        
+    def reset_importance(self) -> None:
+        for layer_idx in range(self.config.num_hidden_layers):
+            self.model.layers[layer_idx].self_attn.reset_importance() # clear()
 
     def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
         """Override to return default layers for Llama

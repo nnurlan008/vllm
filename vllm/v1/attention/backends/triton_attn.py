@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
+import torch.nn.functional as F
+import time
 
 from vllm.attention.backends.abstract import (
     AttentionBackend,
@@ -16,7 +18,7 @@ from vllm.attention.backends.abstract import (
 from vllm.attention.ops.triton_reshape_and_cache_flash import (
     triton_reshape_and_cache_flash,
 )
-from vllm.attention.ops.triton_unified_attention import unified_attention
+from vllm.attention.ops.triton_unified_attention import unified_attention, unified_attention2
 from vllm.config import VllmConfig
 from vllm.config.cache import CacheDType
 from vllm.logger import init_logger
@@ -253,7 +255,7 @@ class TritonAttentionImpl(AttentionImpl):
             )
         self.attn_type = attn_type
         self.fp8_dtype = current_platform.fp8_dtype()
-
+        self.attn_score_per_layer = []
         self.sinks = sinks
         if sinks is not None:
             assert sinks.shape[0] == num_heads, (
@@ -261,6 +263,10 @@ class TritonAttentionImpl(AttentionImpl):
                 f"heads in the layer. Sinks shape: {sinks.shape}, "
                 f"num_heads: {num_heads}."
             )
+            
+    def reset_importance(self):
+        print("resetting the attn_score_per_layer")
+        self.attn_score_per_layer = []
 
     def forward(
         self,
@@ -312,6 +318,8 @@ class TritonAttentionImpl(AttentionImpl):
         num_actual_tokens = attn_metadata.num_actual_tokens
         key_cache, value_cache = kv_cache.unbind(1)
 
+        t0 = time.time()
+
         if (
             self.kv_sharing_target_layer_name is None
             and key is not None
@@ -335,6 +343,13 @@ class TritonAttentionImpl(AttentionImpl):
                 layer._k_scale,
                 layer._v_scale,
             )
+        t1 = time.time()
+
+        # print("attn_metadata.slot_mapping.shape:", attn_metadata.slot_mapping.shape)
+        # print("attn_metadata.block_table.shape:", attn_metadata.block_table.shape)
+
+        # print("attn_metadata.slot_mapping:", attn_metadata.slot_mapping)
+        # print("attn_metadata.block_table:", attn_metadata.block_table)
 
         if self.kv_cache_dtype.startswith("fp8"):
             if key_cache.dtype != self.fp8_dtype:
@@ -352,26 +367,100 @@ class TritonAttentionImpl(AttentionImpl):
 
         descale_shape = (cu_seqlens_q.shape[0] - 1, key_cache.shape[2])
 
-        unified_attention(
-            q=query[:num_actual_tokens],
-            k=key_cache,
-            v=value_cache,
-            out=output[:num_actual_tokens],
-            cu_seqlens_q=cu_seqlens_q,
-            max_seqlen_q=max_seqlen_q,
-            seqused_k=seqused_k,
-            max_seqlen_k=max_seqlen_k,
-            softmax_scale=self.scale,
-            causal=True,
-            alibi_slopes=self.alibi_slopes,
-            window_size=self.sliding_window,
-            block_table=block_table,
-            softcap=self.logits_soft_cap,
-            q_descale=None,  # Not supported
-            k_descale=layer._k_scale.expand(descale_shape),
-            v_descale=layer._v_scale.expand(descale_shape),
-            sinks=self.sinks,
-            output_scale=output_scale,
-        )
+        # print("output.shape:", output.shape)
+        # print("output[:num_actual_tokens].shape:", output[:num_actual_tokens].shape)
+        # print("key_cache.shape:", key_cache.shape)
+        # print("query.shape:", query.shape)
+        total_query_tokens = query.shape[0]
+        num_heads = query.shape[1]
+        max_context_len = torch.max(seqused_k).item()
+        # print("total_query_tokens:", total_query_tokens)
+        # print("num_heads:", num_heads)
+        # print("seqused_k:", seqused_k)
+        # print("attn_metadata.seq_lens:", attn_metadata.seq_lens)
+        # print("max_context_len:", max_context_len)
+        # print("query.device:", query.device)
+        
+        t2 = time.time()
+        if attn_metadata.max_query_len == 1:
+            # print("Using unified_attention2")
+            out_attn = torch.zeros((total_query_tokens, num_heads, max_context_len), 
+                                dtype=torch.float32, device=query.device)
+            unified_attention2(
+                q=query[:num_actual_tokens],
+                k=key_cache,
+                v=value_cache,
+                out=output[:num_actual_tokens],
+                out_attn=out_attn,
+                cu_seqlens_q=cu_seqlens_q,
+                max_seqlen_q=max_seqlen_q,
+                seqused_k=seqused_k,
+                max_seqlen_k=max_seqlen_k,
+                softmax_scale=self.scale,
+                causal=True,
+                alibi_slopes=self.alibi_slopes,
+                window_size=self.sliding_window,
+                block_table=block_table,
+                softcap=self.logits_soft_cap,
+                q_descale=None,  # Not supported
+                k_descale=layer._k_scale.expand(descale_shape),
+                v_descale=layer._v_scale.expand(descale_shape),
+                sinks=self.sinks,
+                output_scale=output_scale,
+                return_attention=True,
+            )
+            # print("out_attn.mean(dim=1):", out_attn.mean(dim=1))
+            # print("out_attn:", out_attn)
+            # print("out_attn.shape:", out_attn.shape)
+            
+            probs = F.softmax(out_attn, dim=-1)
+            # print("probs:", probs)
+            # here I am summing over all the query heads (MHA, GQA already handled in triton kernel)
+            # this is optional. Could change this to store all the heads as is
+            # but in this case the get_token_importance in worker_base.py should be changed
+            probs = probs.mean(dim=1)
+            probs = probs[0]
+            self.attn_score_per_layer.append(probs.cpu().detach().tolist())
+            del probs
+
+            t3 = time.time()
+
+            # print(f'Triton flash attention: {(1000 * (t3 - t2)):.2f} ms')
+            # print(f'Rest in the middle: {(1000 * (t2 - t1)):.2f} ms')
+            # print(f'triton_reshape_and_cache_flash: {(1000 * (t1 - t0)):.2f} ms')
+            
+            # print("probs.shape:", probs.shape)
+            # print("probs:", probs)
+            # print("probs.mean(dim=1):", probs.mean(dim=1))
+            # print("self.attn_score_per_layer:", self.attn_score_per_layer)
+        else:
+            # print("Using unified_attention")
+            unified_attention(
+                q=query[:num_actual_tokens],
+                k=key_cache,
+                v=value_cache,
+                out=output[:num_actual_tokens],
+                cu_seqlens_q=cu_seqlens_q,
+                max_seqlen_q=max_seqlen_q,
+                seqused_k=seqused_k,
+                max_seqlen_k=max_seqlen_k,
+                softmax_scale=self.scale,
+                causal=True,
+                alibi_slopes=self.alibi_slopes,
+                window_size=self.sliding_window,
+                block_table=block_table,
+                softcap=self.logits_soft_cap,
+                q_descale=None,  # Not supported
+                k_descale=layer._k_scale.expand(descale_shape),
+                v_descale=layer._v_scale.expand(descale_shape),
+                sinks=self.sinks,
+                output_scale=output_scale,
+            )
+
+        t3 = time.time()
+
+        # print(f'Triton flash attention: {(1000 * (t3 - t2)):.2f} ms for seq: {max_context_len}')
+        # print(f'Rest in the middle: {(1000 * (t2 - t1)):.2f} ms')
+        # print(f'triton_reshape_and_cache_flash: {(1000 * (t1 - t0)):.2f} ms')
 
         return output

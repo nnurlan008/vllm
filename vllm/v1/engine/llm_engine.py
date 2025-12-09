@@ -210,6 +210,15 @@ class LLMEngine:
         request_ids = self.output_processor.abort_requests(request_ids)
         self.engine_core.abort_requests(request_ids)
 
+    def get_importance(self):
+        # print("self.collective_rpc(\"get_token_importance\") ", self.collective_rpc("get_token_importance"))
+        return self.collective_rpc("get_token_importance")
+    
+    def reset_importance(self):
+        print("reset importance")
+        # print("self.collective_rpc(\"get_token_importance\") ", self.collective_rpc("get_token_importance"))
+        return self.collective_rpc("reset_importance")
+
     def add_request(
         self,
         request_id: str,

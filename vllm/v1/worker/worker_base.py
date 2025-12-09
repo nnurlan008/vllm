@@ -133,6 +133,35 @@ class WorkerBase:
         """
         raise NotImplementedError
 
+    def get_token_importance(self) -> list[list[list[float]]]:
+        # convert tensors -> CPU -> Python lists, detach to avoid grad links
+        # return [t.detach().cpu().tolist() for t in self.token_importance]
+        
+        """
+            Returns:
+            List[Layer][Query][TokenWeights]
+            - Layer: which transformer layer (0-31)
+            - Query: which query in that layer
+            - TokenWeights: attention weight for each token
+        """
+        # return [
+        #     [
+        #         weights_tensor.detach().cpu().tolist() 
+        #         for weights_tensor in layer_weights
+        #     ]
+        #     for layer_weights in self.token_importance
+        # ]
+
+        # token_importance = [] # [[] for _ in range(self.vllm_config.model_config.hf_config.num_hidden_layers)]
+        # # for layer in self.token_importance:
+        # #     list_layer = [query_weights.detach().cpu().tolist() for query_weights in layer]
+        # #     token_importance.append(list_layer)
+        # print("self.token_importance: ", self.token_importance)
+        return self.token_importance
+    
+    def reset_importance(self):
+        self.reset_importance()
+
     def sample_tokens(
         self, grammar_output: GrammarOutput
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput:
